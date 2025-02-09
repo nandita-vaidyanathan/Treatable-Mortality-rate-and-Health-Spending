@@ -1,0 +1,402 @@
+---
+title: "spe487 ps3"
+author: "Nandita"
+date: "2024-04-17"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r include=FALSE}
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(gtsummary)
+library(ggplot2)
+library(ggthemes)
+library(car)
+library(flexmix)
+```
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+#loading and cleaning the mortality data set
+mortality <- read_delim("/Users/nandita/Documents/R/Econometrics/Age-adjusted Mortality Rate.txt", delim = "\t", escape_double = FALSE, trim_ws = TRUE)
+
+mortality$State <- sub(".*,\\s*", "", mortality$County)
+mortality$County <- gsub(",.*", "", mortality$County)
+mortality <- mortality[, -which(names(mortality)== "Notes")]
+mortality <- mortality%>%
+
+  rename(countycode= `County Code`)
+
+#loading and formatting local government finances data from CCES
+expenditure <- read_csv("/Users/nandita/Documents/R/Econometrics/2020FinEstDAT_06122023modp_pu.txt", col_names= FALSE)
+                
+expenditure$State <- substr(expenditure$X1, 1, 2)
+expenditure$Level <- substr(expenditure$X1, 3, 3)
+expenditure$County <- substr(expenditure$X1, 4, 6)
+expenditure$Unit_Identifier <- substr(expenditure$X1, 7, 12)
+expenditure$amount <- substr(expenditure$X1, 16, 27)
+expenditure$year <- substr(expenditure$X1, 28, 31)
+expenditure$item_flag <- substr(expenditure$X1, 32, 32)
+expenditure$item_code <- substr(expenditure$X1, 13, 15)
+expenditure$countycode <- paste0(expenditure$State, expenditure$County)
+
+#filtering out only public health expenditure
+expenditure <- expenditure%>%
+  dplyr::select(countycode, item_code, amount, Level)%>%
+  filter(Level== "1"& item_code== "E32")
+
+#merging the data sets
+joint_data <- left_join(mortality, expenditure, by= "countycode")
+
+joint_data$`Age Adjusted Rate`[joint_data$`Age Adjusted Rate` == "Unreliable"] <- NA
+joint_data$`Age Adjusted Rate` <- as.numeric(joint_data$`Age Adjusted Rate`)
+#converting public health expenditure to per capita expenditure 
+joint_data$amount_percap <- (as.numeric(joint_data$amount)*1000) /as.numeric(joint_data$Population)
+
+#loading data on unemployed population and per capita income data from CCES
+df <- read_csv("/Users/nandita/Documents/R/Econometrics/R13641357_SL050.csv")
+df <- df%>%
+  rename(unemployed= `Civilian Population in Labor Force 16 Years and Over: Unemployed`)%>%
+  rename(per_cap_income= `Per Capita Income (In 2020 Inflation Adjusted Dollars)`)%>%
+  rename(countycode= FIPS)%>%
+  rename(laborforce= `Civilian Population in Labor Force 16 Years and Over:`)%>%
+  dplyr::select(countycode, unemployed, laborforce, per_cap_income)%>%
+ slice(-1)
+
+joint_data <- left_join(joint_data, df, by="countycode")
+#creating a new column for unemployment rate
+joint_data$unemployment_rate <- (as.numeric(joint_data$unemployed)/as.numeric(joint_data$laborforce))*100
+
+#loading in data on educational attainment for persons over 25 years with a bachelor's degree or more
+education <- read_csv("/Users/nandita/Documents/R/Econometrics/R13642380_SL050.csv")
+
+education <- education%>%
+  dplyr::select(FIPS,`Population 25 Years and Over:`, `Population 25 Years and Over: Bachelor's Degree or More`)%>%
+  rename(education_bachelors= `Population 25 Years and Over: Bachelor's Degree or More`)%>%
+  rename(total_pop_over25= `Population 25 Years and Over:`)%>%
+  rename(countycode= 'FIPS')%>%
+  slice(-1)
+education$percap_ed <- as.numeric(education$education_bachelors)/as.numeric(education$total_pop_over25)
+
+#merging to create final data set
+joint_data <- left_join(joint_data, education, by= "countycode")
+
+#splitting my US region
+joint_data <- joint_data %>%
+  mutate(Region = case_when(
+    State %in% c('AK', 'CA', 'HI', 'OR', 'WA', 'AZ', 'CO', 'ID', 'NM', 'MT', 'UT', 'NV', 'WY') ~ "West",
+    State %in% c('AL', 'AR', 'FL', 'GA', 'KY', 'LA', 'MS', 'NC', 'SC', 'TN', 'VA', 'WV') ~ "South",
+    State %in% c('CT', 'DE', 'DC', 'ME', 'MD', 'MA', 'NH', 'NJ', 'NY', 'PA', 'RI', 'VT') ~ "Northeast",
+    State %in% c('IL', 'IN', 'IA', 'KS', 'MI', 'MN', 'MO', 'NE', 'ND', 'OH', 'SD', 'WI') ~ "Midwest",
+    TRUE ~ "Other"
+  ))
+
+state_data <- joint_data%>%
+  dplyr::select(State, Deaths, Population, `Age Adjusted Rate`, amount_percap, per_cap_income, unemployment_rate, percap_ed)
+
+state_name <- data.frame(State = state.abb,
+                           State_Full = state.name)
+joint_data <- merge(joint_data, state_name, by = "State")
+```
+
+My study aims to explore the association between public health expenditure and age-adjusted mortality rates due to major cardiovascular diseases in the US through the analysis of county-level data. It studies the regional variability in public health expenditure, as well as mortality rates. The study also examines validity against other economic indicators, such as per capita income, unemployment level, and educational attainment per county. 
+
+```{r}
+#to check distribution of main variables
+hist(joint_data$`Age Adjusted Rate`)
+hist(joint_data$amount_percap)
+
+```
+The histogram of both variables appear to highly skewed. To reduce heteroskedacity problems, the main variables are log-transformed. Per capita income is also log transformed as it makes it easier to compare across the different variables. Moreover, the study aims to understand the proportional changes in age-adjusted mortality rate and the other variables, therefore, log-transforming the necessary variables make sense.
+
+Age-adjusted cardiovascular mortality rate is the dependent variable, public health expenditure per capita is the primary independent variable, income per capita, unemployment rate, and educational attainment, are the additional socioeconomic factors that may be associated with cardiovascular mortality rates. The model will log transform the dependent variable, age-adjusted mortality rate, as well as the independent variables public health expenditure and income per capita, to account for large variations in the data. This can be expressed in the form:
+```{r}
+#converting to numeric form
+joint_data$amount_percap <- as.numeric(joint_data$amount_percap)
+joint_data$per_cap_income <- as.numeric(joint_data$per_cap_income)
+
+#building linear regression model
+regression_model <- lm(log(`Age Adjusted Rate`)~ log(amount_percap)+ log(per_cap_income)
+                       + unemployment_rate + percap_ed, data= joint_data)
+regression_model
+#viewing raw summary table
+coef <- summary(regression_model)$coefficients
+coef
+#to check if residuals are normally distributed
+residuals_model <- hist(regression_model$residuals)
+```
+
+```{r}
+#creating a predicted probability plot
+joint_data$log_amount_percap <- log(joint_data$amount_percap)
+joint_data$log_per_cap_income <- log(joint_data$per_cap_income)
+
+joint_data <- joint_data[is.finite(joint_data$log_amount_percap), ]
+  
+xhyp <- seq(min(joint_data$log_amount_percap), max(joint_data$log_amount_percap), length.out = 10000)
+
+simulated_predictions <- matrix(NA, nrow = length(xhyp), ncol = 10000)
+
+for (i in 1:10000) {
+  boot_data <- sample_n(joint_data, size = nrow(joint_data), replace = TRUE)
+  
+ 
+  boot_model <- lm(log(`Age Adjusted Rate`) ~ log_amount_percap + log_per_cap_income 
+                   + unemployment_rate + percap_ed, data = boot_data)
+  
+
+  simulated_predictions[, i] <- predict(boot_model, newdata = 
+  data.frame(log_amount_percap 
+  = xhyp, log_per_cap_income = mean(joint_data$log_per_cap_income),
+  unemployment_rate = mean(joint_data$unemployment_rate), 
+  percap_ed = mean(joint_data$percap_ed)))
+}
+
+plt <- ggplot() +
+  geom_line(data = data.frame(x = xhyp, y = apply(simulated_predictions, 1, mean)), 
+            aes(x = x, y = y), color = "blue") +
+  geom_ribbon(data = data.frame(x = xhyp, lower_ci = 
+   apply(simulated_predictions, 1, quantile, probs = 0.025), 
+   upper_ci = apply(simulated_predictions, 1, quantile, probs = 0.975)), 
+   aes(x = x, ymin = lower_ci, ymax = upper_ci), 
+   fill = "lightblue", alpha = 0.5) +
+  labs(x = "Log of Public Health Expenditure across US counties", y = "Predicted Probability of CVD Mortality") +
+  ggtitle("Predicted Probability Plot with 95% Confidence Intervals") +
+  theme_minimal()
+plt
+```
+
+The predicted probability plot illustrates a negative relationship between log-transformed public health expenditure and log-transformed age-adusted cardiovascular disease mortality rate across US counties. The narrow confidence interval in the middle of the plot indicates high confidence in the predicted probabilities for moderate levels of health expenditure, while the broader interval at the extremes suggests increasing uncertainty in predictions for extreme values of health expenditure.
+```{r}
+#visualizing variance inflation factor to check multicollinearity
+vif_values <- vif(regression_model)
+var_names= c("Health Expenditure", "Per Capita Income", "Unemployment Rate", "Educational Attainment")
+#visualizing vif values
+plotvif <- barplot(vif_values, main = "Variance Inflation Factor (VIF)", width= 0.7, col = "#0666cc", names.arg = var_names)
+plotvif
+```
+
+```{r}
+model1 <-  lm(log(`Age Adjusted Rate`)~ log(amount_percap), data= joint_data)
+model2 <-  lm(log(`Age Adjusted Rate`)~ log(amount_percap)+ log(per_cap_income)
+                       + unemployment_rate + percap_ed, data= joint_data)
+summary(model2)
+#visualizing residuals
+plot(model2, which = 1, main = "Residuals vs. Fitted", col = "#0066cc")
+```
+The residuals vs fitted values plot shows that the lowess line is reasonably flat, providing evidence that a linear model is reasonable. 
+
+```{r}
+joint_data$`Age Adjusted Rate` <- as.numeric(joint_data$`Age Adjusted Rate`)
+
+#conducting F-test
+anova(model1, model2)
+
+#using BIC
+BIC(model1)
+BIC(model2)
+
+adjusted_r_squared <- c(5.099, 54.82) 
+model_names <- c("model 1", "model 2")
+
+#visualizing adjusted R-squared values
+
+df <- data.frame(Model = model_names, Adjusted_R_squared = adjusted_r_squared)
+
+r_squared <- ggplot(df, aes(x = Model, y = Adjusted_R_squared, fill = Model)) +
+  geom_bar(stat = "identity", color = "#0066cc", fill= "#0066cc") +
+  labs(x = "Model", y = "Adjusted R-squared", title = "Adjusted R-squared Comparison")+
+  theme_tufte()
+r_squared
+```
+Model 2 has a lower BIC score, as well as lower adjusted R-squared value, implying better fit.
+```{r}
+#visualizing regression model to check if all assumptions are fulfilled
+library(performance)
+library(see)
+library(qqplotr)
+
+check_model(model2)
+diagnostic_plots <- plot(check_model(model2, panel = FALSE))
+homogeneity <- diagnostic_plots[[3]]
+homogeneity
+normality <- diagnostic_plots[[6]]
+normality
+```
+ 
+```{r}
+#trying different plots to see how I can display mortality rate across the country
+
+# Define the minimum number of observations required per state
+min_obs_per_state <- 5  
+
+# Calculate mean and confidence intervals for each state, ignoring states with insufficient data
+forestplot_data <- joint_data %>%
+  group_by(State) %>%
+  summarise(n_obs = sum(!is.na(`Age Adjusted Rate`)),
+            mean_AAR = ifelse(n_obs >= min_obs_per_state, mean(`Age Adjusted Rate`, na.rm = TRUE), NA),
+            lower_CI = ifelse(n_obs >= min_obs_per_state, t.test(`Age Adjusted Rate`, na.rm = TRUE)$conf.int[1], NA),
+            upper_CI = ifelse(n_obs >= min_obs_per_state, t.test(`Age Adjusted Rate`, na.rm = TRUE)$conf.int[2], NA)) %>%
+  filter(!is.na(mean_AAR))  
+
+us_average <- mean(forestplot_data$mean_AAR, na.rm = T)
+
+ggplot(forestplot_data, aes(x = mean_AAR, y = State)) +
+  geom_point() +  
+  geom_errorbarh(aes(xmin = lower_CI, xmax = upper_CI), height = 0) +  
+  geom_vline(xintercept = us_average, linetype = "dashed", color = "red") +
+  labs(x = "Age Adjusted Mortality Rate", y = "State") + 
+  theme_minimal()
+#don't like how this plot looks, might try something different
+```
+
+```{r}
+#visualizing multiple regression model
+library(broom)
+library(reshape2)
+custom_labels <- c(
+  'log(amount_percap)' = 'Health Expenditure',
+  'log(per_cap_income)' = 'Per Capita Income',
+  'unemployment_rate' = 'Unemployment Rate',
+  'percap_ed' = 'Per Capita Education'
+)
+augmented_data <- augment(model2)
+melted_data <- melt(augmented_data, measure.vars = c('log(amount_percap)', "log(per_cap_income)",
+                                                     "unemployment_rate", "percap_ed"),
+                    variable.name = "IV")
+ggplot(melted_data, aes(value, .fitted)) +
+  geom_smooth(method = "lm", color = "#0666cc") +
+  labs(x = "Independent Variables", y = "Age Adjusted Mortality")+
+  facet_wrap(~IV, scales = "free_x", labeller = labeller( IV = custom_labels))+
+    theme(axis.text=element_text(size=8))+
+  theme_minimal()
+
+```
+
+```{r}
+#visualizing strength of IVs
+library(scales)
+#another way to do this
+recode01 <- function(x){
+  xmin <- min(x, na.rm=T)
+  xmax <- max(x, na.rm=T)
+  return(
+    (x - xmin) / (xmax - xmin)
+  )
+}
+
+joint_data$amount_percap1 <- recode01(joint_data$amount_percap)
+joint_data$per_cap_income1 <- recode01(joint_data$per_cap_income)
+joint_data$unemployment_rate1 <- recode01(joint_data$unemployment_rate)
+joint_data$percap_ed1 <- recode01(joint_data$percap_ed)
+
+
+reg.out <- lm(`Age Adjusted Rate`~amount_percap1 + per_cap_income1 +
+                            unemployment_rate1 + percap_ed1, data = joint_data)
+
+broom::tidy(reg.out)%>%
+  filter(term != "(Intercept)")%>%
+  ggplot(aes(x= estimate, y= term)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = estimate - 1.96 * std.error, xmax = estimate + 1.96 * std.error), height = 0) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  scale_x_continuous(labels = scales::number_format(accuracy = 1, scale= 0.01)) +
+  labs(x = "Coefficient Estimate", y = "Independent Variables", title = "Strength of Relationships") +
+  theme_minimal()
+```
+
+```{r}
+#visualizing Mean AAR by US region
+p<- ggplot(data = joint_data %>%
+              group_by(Region, State_Full) %>%
+             filter(Region != "Other")%>%
+              mutate(mean_AAR = mean(`Age Adjusted Rate`, na.rm = TRUE)),
+            aes(x = mean_AAR, y = reorder(State_Full, mean_AAR))) +
+  geom_point() +
+  geom_vline(xintercept = us_average, linetype = "dashed", color = "darkblue") +
+  labs(x= "Mean Age Adjusted Cardiovascular Mortality", y= "States") +
+  facet_wrap(~ Region, scales = "free_y", nrow = 1)+
+  theme(aspect.ratio = 1)
+ggsave("meanAAR2.png", width = 1333/90, height = 890/90, dpi = 900) 
+
+us_avg <- mean(joint_data$amount_percap, na.rm = T)
+p
+
+#visualizing PH expenditure by US region
+p1<- ggplot(data = joint_data %>%
+              group_by(Region, State_Full) %>%
+             filter(Region != "Other")%>%
+              mutate(mean_exp = mean(amount_percap, na.rm = TRUE)),
+            aes(x = mean_exp, y = reorder(State_Full, mean_exp))) +
+  geom_point() +
+  geom_vline(xintercept = us_avg, linetype = "dashed", color = "darkblue") +
+  labs(x = "Public Health Expenditure", y = "State") +
+  facet_wrap(~ Region, scales = "free_y", nrow = 1)+
+  theme(aspect.ratio = 1)
+ggsave("exp2.png", width = 1333/90, height = 890/90, dpi = 900)
+p1
+
+#I like these plots better than the forest plot I created above, it is cleaner and I can compare across regions
+
+```
+
+```{r}
+#arriving at descriptive statistic values
+mean_exp_reg <- joint_data %>%
+  group_by(Region) %>%
+  summarise(mean_exp_reg = mean(amount_percap))
+mean_exp_reg
+
+mean_aar_reg <- joint_data %>%
+  group_by(Region) %>%
+  summarise(mean_aar_reg = mean(`Age Adjusted Rate`, na.rm = TRUE))
+mean_aar_reg
+
+mean_percapinc_reg <- joint_data %>%
+  group_by(Region) %>%
+  summarise(mean_inc_reg = mean(per_cap_income))
+mean_percapinc_reg
+
+mean_unemp_reg <- joint_data %>%
+  group_by(Region) %>%
+  summarise(mean_unemp_reg = mean(unemployment_rate))
+mean_unemp_reg
+
+mean_ed_reg <- joint_data %>%
+  group_by(Region) %>%
+  summarise(mean_ed_reg = mean(percap_ed))
+mean_ed_reg
+
+mean_mortality_by_county <- joint_data %>%
+  group_by(State, County) %>%
+  summarise(mean_mortality_rate = mean(`Age Adjusted Rate`, na.rm = TRUE))
+mean_mortality_by_county
+
+mean_exp <- joint_data %>%
+  group_by(State, County) %>%
+  summarise(mean_exp_county = mean(amount_percap, na.rm=TRUE))
+top <- mean_exp%>%
+  arrange(mean_exp_county)%>%
+  print(n= 100)
+
+top_counties <- mean_mortality_by_county %>%
+  arrange(mean_mortality_rate) %>%
+ print(n = 100)%>%
+top_counties
+
+bottom <- mean_mortality_by_county %>%
+  arrange(mean_mortality_rate) %>%
+  print(n= 100)
+
+bottom <- mean_mortality_by_county %>%
+  group_by(State) %>%
+  summarise(total_mortality = sum(mean_mortality_rate),
+            county_count = n()) %>%
+  mutate(percentage = ifelse(total_mortality != 0, (total_mortality / sum(total_mortality)) * 100, 0)) %>%
+  arrange(percentage)
+```
