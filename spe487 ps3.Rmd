@@ -1,5 +1,5 @@
 ---
-title: "spe487 ps3"
+title: "Does Increasing Health Spending decrease Treatable Mortality?"
 author: "Nandita"
 date: "2024-04-17"
 output:
@@ -7,7 +7,7 @@ output:
     df_print: paged
   pdf_document: default
 ---
-
+My study aims to explore the association between public health expenditure and age-adjusted mortality rates due to major cardiovascular diseases in the US through the analysis of county-level data. It studies the regional variability in public health expenditure, as well as mortality rates. The study also examines validity against other economic indicators, such as per capita income, unemployment level, and educational attainment per county
 
 ```{r include=FALSE}
 library(readr)
@@ -103,8 +103,6 @@ state_name <- data.frame(State = state.abb,
                            State_Full = state.name)
 joint_data <- merge(joint_data, state_name, by = "State")
 ```
-
-My study aims to explore the association between public health expenditure and age-adjusted mortality rates due to major cardiovascular diseases in the US through the analysis of county-level data. It studies the regional variability in public health expenditure, as well as mortality rates. The study also examines validity against other economic indicators, such as per capita income, unemployment level, and educational attainment per county. 
 
 ```{r}
 #to check distribution of main variables
