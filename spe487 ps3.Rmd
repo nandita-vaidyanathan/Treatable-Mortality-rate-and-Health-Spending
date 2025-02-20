@@ -7,6 +7,8 @@ output:
     df_print: paged
   pdf_document: default
 ---
+Note: PDF files in this repository need to be downloaded to be viewed properly. The "Invalid PDF" message is just a GitHub display limitation.
+
 My study aims to explore the association between public health expenditure and age-adjusted mortality rates due to major cardiovascular diseases in the US through the analysis of county-level data. It studies the regional variability in public health expenditure, as well as mortality rates. The study also examines validity against other economic indicators, such as per capita income, unemployment level, and educational attainment per county
 
 ```{r include=FALSE}
